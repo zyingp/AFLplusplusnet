@@ -1263,9 +1263,18 @@ u32 afl_fsrv_get_mapsize(afl_forkserver_t *fsrv, char **argv,
 
 }
 
-/* Delete the current testcase and write the buf to the testcase file */
+
+// zyp
+u8 *testcase_buf;
+size_t testcase_len;
+
+  /* Delete the current testcase and write the buf to the testcase file */
 
 void afl_fsrv_write_to_testcase(afl_forkserver_t *fsrv, u8 *buf, size_t len) {
+    //zyp
+  testcase_buf = buf;
+  testcase_len = len;
+  return;
 
 #ifdef __linux__
   if (unlikely(fsrv->nyx_mode)) {
@@ -1380,6 +1389,177 @@ void afl_fsrv_write_to_testcase(afl_forkserver_t *fsrv, u8 *buf, size_t len) {
 
 }
 
+
+#include <arpa/inet.h>
+#include <poll.h>
+#include <sys/time.h>                       // for gettimeofday
+//#include <afl-fuzz.h>
+enum {
+  /* 00 */ PRO_TCP,
+  /* 01 */ PRO_UDP
+};
+// zyp
+u8  use_net = 0;
+u8  net_protocol = PRO_TCP;     // 采用的协议
+u8 *net_ip = "127.0.0.1";       // 连接的ip地址
+u32 net_port = 10001;           // 端口
+u32 reconnect_num = 1000;        // 多少input重连一次
+u32 socket_timeout_usecs = 1000;     // 连接的等待时间 in us 
+u32 wait_after_send_one_usecs = 10;  // 发送完一个种子中一块内容后的等待时间in us
+u32 wait_after_sendusecs = 1;        // 发送完一个种子所有内容后的等待时间in us
+u32 new_start_server_waitusecs = 1000;  // 重启服务器后的等待时间 in us
+
+
+
+int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
+  unsigned int  byte_count = 0;
+  int           n;
+  struct pollfd pfd[1];
+  pfd[0].fd = sockfd;
+  pfd[0].events = POLLOUT;
+  int rv = poll(pfd, 1, 1);
+
+  setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout,
+             sizeof(timeout));
+  if (rv > 0) {
+    if (pfd[0].revents & POLLOUT) {
+      while (byte_count < len) {
+        usleep(wait_after_send_one_usecs);
+        n = send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
+        if (n == 0) return byte_count;
+        if (n == -1) return -1;
+        byte_count += n;
+      }
+    }
+  }
+
+  // 读取可读数据丢弃
+  static char buf[8196];
+  pfd[0].fd = sockfd;
+  pfd[0].events = POLLIN;
+  rv = poll(pfd, 1, 0);  // 立刻返回
+  int readn = 0;
+  if (rv > 0) {
+    if (pfd[0].revents & POLLIN) { 
+        readn = read(sockfd, buf, sizeof(buf));
+        if (readn == -1) { 
+            // 可能太多了打印了
+            //perror("wrong read"); 
+        }
+    }
+  }
+
+  return byte_count;
+}
+
+// zyp modfied from aflnet
+int send_over_network() {
+  int                n;
+  u8                 likely_buggy = 0;
+  struct sockaddr_in serv_addr;
+
+  // Clean up the server if needed
+  //if (cleanup_script) system(cleanup_script);
+
+  // Wait a bit for the server initialization
+  //usleep(server_wait_usecs);
+
+  // Create a TCP/UDP socket
+  static int sockfd = -1;
+  static int current_input_num = 0;
+
+  if (current_input_num % reconnect_num == 0) { 
+      if (sockfd != -1) { 
+          close(sockfd);
+          sockfd = -1;
+      }
+      current_input_num = 0;
+  }
+  ++current_input_num;
+
+   // Set timeout for socket data sending/receiving -- otherwise it causes a
+  // big delay if the server is still alive after processing all the requests
+  struct timeval timeout;
+  timeout.tv_sec = 0;
+  timeout.tv_usec = socket_timeout_usecs;
+
+  if (sockfd == -1) {
+    if (net_protocol == PRO_TCP)
+      sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    else if (net_protocol == PRO_UDP)
+      sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (sockfd < 0) { PFATAL("Cannot create a socket"); }
+
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout,
+               sizeof(timeout));
+
+    memset(&serv_addr, '0', sizeof(serv_addr));
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(net_port);
+    serv_addr.sin_addr.s_addr = inet_addr(net_ip);
+
+    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+      // If it cannot connect to the server under test
+      // try it again as the server initial startup time is varied
+      for (n = 0; n < 1000; n++) {
+        if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) ==
+            0)
+          break;
+        usleep(1000);
+      }
+      if (n == 1000) {
+        close(sockfd);
+        sockfd = -1;
+        printf("error too many tries\n");
+        return 1;
+      }
+    }
+  }
+
+  n = net_send(sockfd, timeout, testcase_buf, testcase_len);
+  if (n == -1) { 
+      if (sockfd != -1) { 
+          close(sockfd);
+          sockfd = -1;
+      }
+      return 1;
+  }
+
+  usleep(wait_after_sendusecs);
+
+  // wait a bit letting the server to complete its remaing task(s)
+  //memset(session_virgin_bits, 255, afl->fsrv.map_size);
+  //while (1) {
+  //  if (has_new_bits(session_virgin_bits) != 2) break;
+  //}
+
+  return 0;
+}
+
+// 0 not existing, 1 existing
+u8 exist_pid(int pid) {
+  if (pid == -1 || pid == 0) { 
+      return 0;
+  }
+  int killres = kill(pid, 0);
+  int errnon = errno;
+  if (killres == 0) { 
+      return 1;      // the process is existing and is child
+  }else if (killres == -1) { 
+      if (errnon == ESRCH) { 
+          return 0;  // the process is not existing
+      } else if (errnon == EPERM) {
+          return 0;  // the process is existing but is not child
+      } else {
+          return 0;  // should not happen
+      }
+    
+  } 
+
+}
+
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update afl->fsrv->trace_bits. */
 
@@ -1468,20 +1648,32 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
   /* we have the fork server (or faux server) up and running
   First, tell it if the previous run timed out. */
 
-  if ((res = write(fsrv->fsrv_ctl_fd, &write_value, 4)) != 4) {
+  u8 need_new_prog = 0;
+  u8        is_new_start = 0;
 
-    if (*stop_soon_p) { return 0; }
-    RPFATAL(res, "Unable to request new process from fork server (OOM?)");
-
+  if (use_net) { //zyp
+      if (!need_new_prog) {
+         if (!exist_pid(fsrv->child_pid)) { 
+             need_new_prog = 1; 
+         }
+      }
   }
 
-  fsrv->last_run_timed_out = 0;
+  if (!use_net || (use_net && need_new_prog)) { //zyp
 
-  if ((res = read(fsrv->fsrv_st_fd, &fsrv->child_pid, 4)) != 4) {
+    if ((res = write(fsrv->fsrv_ctl_fd, &write_value, 4)) != 4) {
+      if (*stop_soon_p) { return 0; }
+      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+    }
 
-    if (*stop_soon_p) { return 0; }
-    RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+    fsrv->last_run_timed_out = 0;
 
+    if ((res = read(fsrv->fsrv_st_fd, &fsrv->child_pid, 4)) != 4) {
+      if (*stop_soon_p) { return 0; }
+      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+    }
+
+    is_new_start = 1;
   }
 
 #ifdef AFL_PERSISTENT_RECORD
@@ -1518,25 +1710,45 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
 
   }
 
-  exec_ms = read_s32_timed(fsrv->fsrv_st_fd, &fsrv->child_status, timeout,
-                           stop_soon_p);
+  // zyp
 
-  if (exec_ms > timeout) {
+  if (is_new_start) { 
+      usleep(new_start_server_waitusecs);
+  }
 
-    /* If there was no response from forkserver after timeout seconds,
-    we kill the child. The forkserver should inform us afterwards */
+  if (use_net) { 
+      struct timeval start;
+      struct timeval end;
+      unsigned long  timer;
+      gettimeofday(&start, NULL);
+      send_over_network();
+      gettimeofday(&end, NULL);
+      timer = (1000000 * (end.tv_sec - start.tv_sec) + end.tv_usec - start.tv_usec) / 1000; // in ms
+      exec_ms = MAX(1,timer);
+  } else {
+    exec_ms = read_s32_timed(fsrv->fsrv_st_fd, &fsrv->child_status, timeout,
+                             stop_soon_p);
+  }
 
-    s32 tmp_pid = fsrv->child_pid;
-    if (tmp_pid > 0) {
+    // zyp
+  if (use_net && !exist_pid(fsrv->child_pid)) { 
+      return FSRV_RUN_CRASH; 
+  }
 
-      kill(tmp_pid, fsrv->kill_signal);
-      fsrv->child_pid = -1;
+  if (!use_net) {
+    if (exec_ms > timeout) {
+      /* If there was no response from forkserver after timeout seconds,
+      we kill the child. The forkserver should inform us afterwards */
 
+      s32 tmp_pid = fsrv->child_pid;
+      if (tmp_pid > 0) {
+        kill(tmp_pid, fsrv->kill_signal);
+        fsrv->child_pid = -1;
+      }
+
+      fsrv->last_run_timed_out = 1;
+      if (read(fsrv->fsrv_st_fd, &fsrv->child_status, 4) < 4) { exec_ms = 0; }
     }
-
-    fsrv->last_run_timed_out = 1;
-    if (read(fsrv->fsrv_st_fd, &fsrv->child_status, 4) < 4) { exec_ms = 0; }
-
   }
 
   if (!exec_ms) {
@@ -1567,7 +1779,10 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
 
   }
 
-  if (!WIFSTOPPED(fsrv->child_status)) { fsrv->child_pid = -1; }
+  //zyp comment
+  if (!use_net) {
+    if (!WIFSTOPPED(fsrv->child_status)) { fsrv->child_pid = -1; }
+  }
 
   fsrv->total_execs++;
 
@@ -1578,6 +1793,7 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
   MEM_BARRIER();
 
   /* Report outcome to caller. */
+
 
   /* Was the run unsuccessful? */
   if (unlikely(*(u32 *)fsrv->trace_bits == EXEC_FAIL_SIG)) {
@@ -1600,55 +1816,49 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
   abort_on_error. On top, a user may specify a custom AFL_CRASH_EXITCODE.
   Handle all three cases here. */
 
-  if (unlikely(
-          /* A normal crash/abort */
-          (WIFSIGNALED(fsrv->child_status)) ||
-          /* special handling for msan and lsan */
-          (fsrv->uses_asan &&
-           (WEXITSTATUS(fsrv->child_status) == MSAN_ERROR ||
-            WEXITSTATUS(fsrv->child_status) == LSAN_ERROR)) ||
-          /* the custom crash_exitcode was returned by the target */
-          (fsrv->uses_crash_exitcode &&
-           WEXITSTATUS(fsrv->child_status) == fsrv->crash_exitcode))) {
-
+  if (!use_net) {
+    if (unlikely(
+            /* A normal crash/abort */
+            (WIFSIGNALED(fsrv->child_status)) ||
+            /* special handling for msan and lsan */
+            (fsrv->uses_asan &&
+             (WEXITSTATUS(fsrv->child_status) == MSAN_ERROR ||
+              WEXITSTATUS(fsrv->child_status) == LSAN_ERROR)) ||
+            /* the custom crash_exitcode was returned by the target */
+            (fsrv->uses_crash_exitcode &&
+             WEXITSTATUS(fsrv->child_status) == fsrv->crash_exitcode))) {
 #ifdef AFL_PERSISTENT_RECORD
-    if (unlikely(fsrv->persistent_record)) {
-
-      char fn[PATH_MAX];
-      u32  i, writecnt = 0;
-      for (i = 0; i < fsrv->persistent_record; ++i) {
-
-        u32 entry = (i + fsrv->persistent_record_idx) % fsrv->persistent_record;
-        u8 *data = fsrv->persistent_record_data[entry];
-        u32 len = fsrv->persistent_record_len[entry];
-        if (likely(len && data)) {
-
-          snprintf(fn, sizeof(fn), "%s/RECORD:%06u,cnt:%06u",
-                   fsrv->persistent_record_dir, fsrv->persistent_record_cnt,
-                   writecnt++);
-          int fd = open(fn, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-          if (fd >= 0) {
-
-            ck_write(fd, data, len, fn);
-            close(fd);
-
+      if (unlikely(fsrv->persistent_record)) {
+        char fn[PATH_MAX];
+        u32  i, writecnt = 0;
+        for (i = 0; i < fsrv->persistent_record; ++i) {
+          u32 entry =
+              (i + fsrv->persistent_record_idx) % fsrv->persistent_record;
+          u8 *data = fsrv->persistent_record_data[entry];
+          u32 len = fsrv->persistent_record_len[entry];
+          if (likely(len && data)) {
+            snprintf(fn, sizeof(fn), "%s/RECORD:%06u,cnt:%06u",
+                     fsrv->persistent_record_dir, fsrv->persistent_record_cnt,
+                     writecnt++);
+            int fd = open(fn, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+            if (fd >= 0) {
+              ck_write(fd, data, len, fn);
+              close(fd);
+            }
           }
-
         }
 
+        ++fsrv->persistent_record_cnt;
       }
-
-      ++fsrv->persistent_record_cnt;
-
-    }
 
 #endif
 
-    /* For a proper crash, set last_kill_signal to WTERMSIG, else set it to 0 */
-    fsrv->last_kill_signal =
-        WIFSIGNALED(fsrv->child_status) ? WTERMSIG(fsrv->child_status) : 0;
-    return FSRV_RUN_CRASH;
-
+      /* For a proper crash, set last_kill_signal to WTERMSIG, else set it to 0
+       */
+      fsrv->last_kill_signal =
+          WIFSIGNALED(fsrv->child_status) ? WTERMSIG(fsrv->child_status) : 0;
+      return FSRV_RUN_CRASH;
+    }
   }
 
   /* success :) */

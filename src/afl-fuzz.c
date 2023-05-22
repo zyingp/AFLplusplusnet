@@ -481,6 +481,16 @@ fail:
 
   #endif
 
+// 解释和定义在afl-forkserver.c
+extern u8  use_net;
+extern u8  net_protocol;
+extern u32  net_port;
+extern u32  reconnect_num;                
+extern u32  socket_timeout_usecs;       
+extern u32  wait_after_send_one_usecs ;     
+extern u32  wait_after_sendusecs;          
+extern u32  new_start_server_waitusecs;  
+
 /* Main entry point */
 
 int main(int argc, char **argv_orig, char **envp) {
@@ -537,10 +547,26 @@ int main(int argc, char **argv_orig, char **envp) {
 
   while ((opt = getopt(
               argc, argv,
-              "+Ab:B:c:CdDe:E:hi:I:f:F:l:L:m:M:nNOXYo:p:RQs:S:t:T:UV:Wx:Z")) >
+              "+Ab:B:c:CdDe:E:hi:I:f:F:l:L:m:M:nNOXYo:p:RQs:S:t:T:UV:Wx:ZP:H:")) >
          0) {
 
     switch (opt) {
+
+        //zyp add
+      case 'P': 
+          use_net = 1;
+          if (sscanf(optarg, "%hhu:%u", &net_protocol, &net_port) != 2) {
+               FATAL("Bad syntax used for -P");
+           }
+          break;
+      case 'H':
+        if (sscanf(optarg, "%u:%u:%u:%u:%u",
+                   &reconnect_num, &socket_timeout_usecs,
+                   &wait_after_send_one_usecs, &wait_after_sendusecs,
+                   &new_start_server_waitusecs) == 0) {
+          FATAL("Bad syntax used for -H");
+        }
+        break;
 
       case 'Z':
         afl->old_seed_selection = 1;

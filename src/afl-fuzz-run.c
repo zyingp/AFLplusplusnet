@@ -284,6 +284,8 @@ static void write_with_gap(afl_state_t *afl, u8 *mem, u32 len, u32 skip_at,
 
 }
 
+//zyp
+extern u8 use_net;
 /* Calibrate a new test case. This is done when processing the input directory
    to warn about flaky or otherwise problematic test cases early on; and when
    new paths are discovered to detect variable behavior and so on. */
@@ -393,13 +395,17 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
 
     fault = fuzz_run_target(afl, &afl->fsrv, use_tmout);
 
+    //zyp 
+    int nun = count_bytes(afl, afl->fsrv.trace_bits);
+    
+
     /* afl->stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
 
     if (afl->stop_soon || fault != afl->crash_mode) { goto abort_calibration; }
 
     if (!afl->non_instrumented_mode && !afl->stage_cur &&
-        !count_bytes(afl, afl->fsrv.trace_bits)) {
+        !count_bytes(afl, afl->fsrv.trace_bits) && !use_net) { //zyp
 
       fault = FSRV_RUN_NOINST;
       goto abort_calibration;
