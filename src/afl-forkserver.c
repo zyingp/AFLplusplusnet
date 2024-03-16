@@ -1408,6 +1408,9 @@ u32 socket_timeout_usecs = 1000;     // 连接的等待时间 in us
 u32 wait_after_send_one_usecs = 10;  // 发送完一个种子中一块内容后的等待时间in us
 u32 wait_after_sendusecs = 1;        // 发送完一个种子所有内容后的等待时间in us
 u32 new_start_server_waitusecs = 1000;  // 重启服务器后的等待时间 in us
+double force_restart_low_speed = 10;   // 执行速度低于多少时强制重启服务器
+u32 force_restart_num = __UINT32_MAX__;         // 强制处理了多少个种子（input）后重启服务器
+double force_restart_min_usecs = 1000000;       // 强制重启的最少时间间隔
 
 
 
@@ -1468,7 +1471,7 @@ int send_over_network() {
   static int sockfd = -1;
   static int current_input_num = 0;
 
-  if (current_input_num % reconnect_num == 0) { 
+  if (current_input_num != 0 && current_input_num % reconnect_num == 0) { 
       if (sockfd != -1) { 
           close(sockfd);
           sockfd = -1;
@@ -1651,13 +1654,53 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
   u8 need_new_prog = 0;
   u8        is_new_start = 0;
 
+  static u32 current_processed_num = 0;
+  static double last_restart_time = 0;
+
+  current_processed_num++;
+
   if (use_net) { //zyp
       if (!need_new_prog) {
          if (!exist_pid(fsrv->child_pid)) { 
              need_new_prog = 1; 
+             current_processed_num = 0;
+             last_restart_time = get_cur_time_us();
          }
       }
+
+      if (need_new_prog != 1) {
+        u8 force_need_new = 0;
+        if (current_processed_num != 0 &&
+            current_processed_num % force_restart_num == 0) {
+              if (get_cur_time_us() - last_restart_time >=
+                  force_restart_min_usecs) {
+                force_need_new = 1;
+                printf("force_restart_num reached, restart\n");
+              }
+        } else if (fsrv->stats_avg_exec != 0 &&
+                   fsrv->stats_avg_exec < force_restart_low_speed) {
+              if (get_cur_time_us() - last_restart_time >=
+                  force_restart_min_usecs) {
+                force_need_new = 1;
+                printf("                 speed too low, restart\n");
+              }
+        }
+
+        if (force_need_new) {
+            kill(fsrv->child_pid, fsrv->kill_signal);
+            if (read(fsrv->fsrv_st_fd, &fsrv->child_status, 4) < 4) {
+               exec_ms = 0;
+            }
+            need_new_prog = 1;
+            current_processed_num = 0;
+            last_restart_time = get_cur_time_us();
+        }
+      }
+
+
   }
+
+
 
   if (!use_net || (use_net && need_new_prog)) { //zyp
 

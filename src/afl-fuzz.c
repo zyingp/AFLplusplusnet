@@ -490,6 +490,9 @@ extern u32  socket_timeout_usecs;
 extern u32  wait_after_send_one_usecs ;     
 extern u32  wait_after_sendusecs;          
 extern u32  new_start_server_waitusecs;  
+extern double force_restart_low_speed;
+extern u32    force_restart_num;
+extern double force_restart_min_usecs;
 
 /* Main entry point */
 
@@ -560,10 +563,11 @@ int main(int argc, char **argv_orig, char **envp) {
            }
           break;
       case 'H':
-        if (sscanf(optarg, "%u:%u:%u:%u:%u",
-                   &reconnect_num, &socket_timeout_usecs,
-                   &wait_after_send_one_usecs, &wait_after_sendusecs,
-                   &new_start_server_waitusecs) == 0) {
+        if (sscanf(optarg, "%u:%u:%u:%u:%u:%lf:%u:%lf", &reconnect_num,
+                   &socket_timeout_usecs, &wait_after_send_one_usecs,
+                   &wait_after_sendusecs, &new_start_server_waitusecs,
+                   &force_restart_low_speed, &force_restart_num,
+                   &force_restart_min_usecs) == 0) {
           FATAL("Bad syntax used for -H");
         }
         break;
