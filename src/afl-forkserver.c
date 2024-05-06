@@ -1440,15 +1440,22 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
   static char buf[8196];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
-  rv = poll(pfd, 1, 0);  // 立刻返回
-  int readn = 0;
-  if (rv > 0) {
-    if (pfd[0].revents & POLLIN) { 
+  int tried_num = 0;
+  while (tried_num < 1000) {  //加入循环，因为一次可能读不完所有可读数据
+    tried_num++;
+    rv = poll(pfd, 1, 0);  // 立刻返回
+    int readn = 0;
+    if (rv > 0) {
+      if (pfd[0].revents & POLLIN) {
         readn = read(sockfd, buf, sizeof(buf));
-        if (readn == -1) { 
-            // 可能太多了打印了
-            //perror("wrong read"); 
+        if (readn == -1) {
+          // 可能太多了打印了
+          // perror("wrong read");
+          break;
         }
+      }
+    } else {
+      break;
     }
   }
 
