@@ -1523,7 +1523,7 @@ int send_over_network() {
         close(sockfd);
         sockfd = -1;
         printf("error too many tries\n");
-        return 1;
+        return 2;
       }
     }
   }
@@ -1663,6 +1663,7 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
 
   static u32 current_processed_num = 0;
   static double last_restart_time = 0;
+  static u8     has_bad_network_problem = 0;
 
   current_processed_num++;
 
@@ -1692,6 +1693,7 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
                 printf("                 speed too low, restart\n");
               }
         }
+        if (has_bad_network_problem = 1) { force_need_new = 1; }
 
         if (force_need_new) {
             kill(fsrv->child_pid, fsrv->kill_signal);
@@ -1724,6 +1726,7 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
     }
 
     is_new_start = 1;
+    has_bad_network_problem = 0;
   }
 
 #ifdef AFL_PERSISTENT_RECORD
@@ -1771,7 +1774,8 @@ fsrv_run_result_t afl_fsrv_run_target(afl_forkserver_t *fsrv, u32 timeout,
       struct timeval end;
       unsigned long  timer;
       gettimeofday(&start, NULL);
-      send_over_network();
+      int res= send_over_network();
+      if (res == 2) { has_bad_network_problem = 1; }
       gettimeofday(&end, NULL);
       timer = (1000000 * (end.tv_sec - start.tv_sec) + end.tv_usec - start.tv_usec) / 1000; // in ms
       exec_ms = MAX(1,timer);
